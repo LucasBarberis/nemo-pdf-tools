@@ -1,0 +1,6 @@
+[Nemo Action]
+Name=Extraer páginas
+Comment=Extrae páginas seleccionadas de un PDF
+Exec=sh -c '$HOME/.local/share/nemo-pdf-tools/bin/extraer-paginas "$@"' dummy %F
+Selection=s
+Extensions=pdf;

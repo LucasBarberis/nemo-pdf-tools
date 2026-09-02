@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+
+sys.path.insert(
+    0,
+    os.path.expanduser("~/.local/share/nemo-pdf-tools/lib")
+)
+
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, Gdk
+
+from pypdf import PdfWriter
+
+
+class JoinPDFWindow(Gtk.Window):
+
+    def __init__(self, files):
+        Gtk.Window.__init__(self, title="Unir PDF")
+
+        self.set_border_width(10)
+        self.set_default_size(650, 450)
+        self.set_position(Gtk.WindowPosition.CENTER)
+
+        self.files = [
+            os.path.abspath(f)
+            for f in files
+            if os.path.isfile(f) and f.lower().endswith(".pdf")
+        ]
+
+        # ---------- Layout principal ----------
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.add(vbox)
+
+        label = Gtk.Label()
+        label.set_markup("<b>Orden de los archivos</b>")
+        label.set_xalign(0)
+        vbox.pack_start(label, False, False, 0)
+
+        # ---------- Lista ----------
+        self.store = Gtk.ListStore(str)
+
+        for filename in self.files:
+            self.store.append([os.path.basename(filename)])
+
+        self.tree = Gtk.TreeView(model=self.store)
+        self.tree.set_headers_visible(False)
+
+        renderer = Gtk.CellRendererText()
+        column = Gtk.TreeViewColumn("Archivo", renderer, text=0)
+        self.tree.append_column(column)
+
+        selection = self.tree.get_selection()
+        selection.set_mode(Gtk.SelectionMode.SINGLE)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(
+            Gtk.PolicyType.AUTOMATIC,
+            Gtk.PolicyType.AUTOMATIC
+        )
+        scrolled.add(self.tree)
+
+        vbox.pack_start(scrolled, True, True, 0)
+
+        # ---------- Botones de orden ----------
+        hbox = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6
+        )
+
+        self.up_button = Gtk.Button(label="Subir")
+        self.down_button = Gtk.Button(label="Bajar")
+        self.remove_button = Gtk.Button(label="Quitar")
+
+        self.up_button.connect("clicked", self.move_up)
+        self.down_button.connect("clicked", self.move_down)
+        self.remove_button.connect("clicked", self.remove)
+
+        hbox.pack_start(self.up_button, False, False, 0)
+        hbox.pack_start(self.down_button, False, False, 0)
+        hbox.pack_start(self.remove_button, False, False, 0)
+
+        vbox.pack_start(hbox, False, False, 0)
+
+        # ---------- Salida ----------
+        output_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6
+        )
+
+        output_label = Gtk.Label(label="Archivo de salida:")
+        output_label.set_xalign(0)
+
+        self.output_entry = Gtk.Entry()
+        self.output_entry.set_hexpand(True)
+
+        if self.files:
+            first = self.files[0]
+            directory = os.path.dirname(first)
+            basename = os.path.splitext(
+                os.path.basename(first)
+            )[0]
+
+            default_output = os.path.join(
+                directory,
+                basename + "_joined.pdf"
+            )
+
+            self.output_entry.set_text(default_output)
+
+        browse_button = Gtk.Button(label="Elegir...")
+        browse_button.connect("clicked", self.choose_output)
+
+        output_box.pack_start(output_label, False, False, 0)
+        output_box.pack_start(self.output_entry, True, True, 0)
+        output_box.pack_start(browse_button, False, False, 0)
+
+        vbox.pack_start(output_box, False, False, 0)
+
+        # ---------- Botones finales ----------
+        action_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6
+        )
+
+        cancel_button = Gtk.Button(label="Cancelar")
+        join_button = Gtk.Button(label="Unir")
+
+        cancel_button.connect("clicked", self.cancel)
+        join_button.connect("clicked", self.join)
+
+        action_box.pack_end(join_button, False, False, 0)
+        action_box.pack_end(cancel_button, False, False, 0)
+
+        vbox.pack_start(action_box, False, False, 0)
+
+        self.connect("key-press-event", self.key_press)
+
+    # --------------------------------------------------
+
+    def get_selected_index(self):
+        selection = self.tree.get_selection()
+        model, iterator = selection.get_selected()
+
+        if iterator is None:
+            return None
+
+        path = model.get_path(iterator)
+        return path.get_indices()[0]
+
+    # --------------------------------------------------
+
+    def move_up(self, button):
+        index = self.get_selected_index()
+
+        if index is None or index == 0:
+            return
+
+        self.store.swap(
+            self.store.get_iter(index),
+            self.store.get_iter(index - 1)
+        )
+
+        self.tree.get_selection().select_path((index - 1,))
+
+    # --------------------------------------------------
+
+    def move_down(self, button):
+        index = self.get_selected_index()
+
+        if index is None or index >= len(self.store) - 1:
+            return
+
+        self.store.swap(
+            self.store.get_iter(index),
+            self.store.get_iter(index + 1)
+        )
+
+        self.tree.get_selection().select_path((index + 1,))
+
+    # --------------------------------------------------
+
+    def remove(self, button):
+        index = self.get_selected_index()
+
+        if index is None:
+            return
+
+        del self.files[index]
+        self.store.remove(
+            self.store.get_iter(index)
+        )
+
+    # --------------------------------------------------
+
+    def choose_output(self, button):
+        dialog = Gtk.FileChooserDialog(
+            title="Elegir archivo PDF",
+            parent=self,
+            action=Gtk.FileChooserAction.SAVE
+        )
+
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_SAVE,
+            Gtk.ResponseType.ACCEPT
+        )
+
+        dialog.set_do_overwrite_confirmation(True)
+
+        current = self.output_entry.get_text()
+
+        if current:
+            directory = os.path.dirname(current)
+            filename = os.path.basename(current)
+
+            if os.path.isdir(directory):
+                dialog.set_current_folder(directory)
+
+            dialog.set_current_name(filename)
+
+        response = dialog.run()
+
+        if response == Gtk.ResponseType.ACCEPT:
+            filename = dialog.get_filename()
+
+            if not filename.lower().endswith(".pdf"):
+                filename += ".pdf"
+
+            self.output_entry.set_text(filename)
+
+        dialog.destroy()
+
+    # --------------------------------------------------
+
+    def cancel(self, button):
+        self.destroy()
+        Gtk.main_quit()
+
+    # --------------------------------------------------
+
+    def join(self, button):
+
+        if len(self.files) < 2:
+            self.error("Se necesitan al menos dos archivos PDF.")
+            return
+
+        output = self.output_entry.get_text().strip()
+
+        if not output:
+            self.error("Elegí un archivo de salida.")
+            return
+
+        output = os.path.abspath(os.path.expanduser(output))
+
+        # Obtener el orden actual de la lista
+        ordered_files = []
+
+        for row in self.store:
+            name = row[0]
+
+            for filename in self.files:
+                if os.path.basename(filename) == name:
+                    if filename not in ordered_files:
+                        ordered_files.append(filename)
+                        break
+
+        # Evitar sobrescribir uno de los PDF de entrada
+        if os.path.abspath(output) in [
+            os.path.abspath(f) for f in ordered_files
+        ]:
+            self.error(
+                "El archivo de salida no puede ser uno "
+                "de los archivos de entrada."
+            )
+            return
+
+        try:
+            os.makedirs(os.path.dirname(output), exist_ok=True)
+
+            writer = PdfWriter()
+
+            for filename in ordered_files:
+                writer.append(filename)
+
+            with open(output, "wb") as f:
+                writer.write(f)
+
+        except Exception as e:
+            self.error(
+                "No se pudo crear el PDF:\n\n" + str(e)
+            )
+            return
+
+        # Mostrar resultado
+        dialog = Gtk.MessageDialog(
+            parent=self,
+            flags=0,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK,
+            text="PDF creado correctamente"
+        )
+
+        dialog.format_secondary_text(output)
+        dialog.run()
+        dialog.destroy()
+
+        self.destroy()
+        Gtk.main_quit()
+
+    # --------------------------------------------------
+
+    def error(self, message):
+
+        dialog = Gtk.MessageDialog(
+            parent=self,
+            flags=0,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text="Error"
+        )
+
+        dialog.format_secondary_text(message)
+        dialog.run()
+        dialog.destroy()
+
+    # --------------------------------------------------
+
+    def key_press(self, widget, event):
+
+        if event.keyval == Gdk.KEY_Escape:
+            self.cancel(None)
+
+
+def main():
+
+    files = sys.argv[1:]
+
+    if len(files) < 2:
+        print("Se necesitan al menos dos archivos PDF.")
+        return 1
+
+    win = JoinPDFWindow(files)
+    win.show_all()
+
+    Gtk.main()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

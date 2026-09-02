@@ -1,0 +1,6 @@
+[Nemo Action]
+Name=Separar PDF
+Comment=Separa un PDF en archivos individuales
+Exec=sh -c '$HOME/.local/share/nemo-pdf-tools/bin/separar-pdf "$@"' dummy %F
+Selection=s
+Extensions=pdf;

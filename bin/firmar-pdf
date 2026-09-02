@@ -1,0 +1,1618 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import shutil
+import subprocess
+import tempfile
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("GdkPixbuf", "2.0")
+
+from gi.repository import Gtk, Gdk, GdkPixbuf, GLib
+
+sys.path.insert(
+    0,
+    os.path.expanduser(
+        "~/.local/share/nemo-pdf-tools/lib"
+    )
+)
+
+from pypdf import PdfReader, PdfWriter
+from PIL import Image
+import cairo
+
+
+DEFAULT_SIGNATURE = os.path.expanduser(
+    "~/.local/share/nemo-pdf-tools/firma.png"
+)
+
+
+# ============================================================
+# Renderizar una página del PDF para la vista previa
+# ============================================================
+
+def load_pdf_page(pdf_path, page_number, output_png):
+
+    subprocess.run(
+        [
+            "pdftoppm",
+            "-f",
+            str(page_number),
+            "-singlefile",
+            "-png",
+            "-r",
+            "100",
+            pdf_path,
+            os.path.splitext(output_png)[0],
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+# ============================================================
+# Ventana principal
+# ============================================================
+
+class FirmarPDF(Gtk.Window):
+
+    def __init__(self, pdf_path):
+
+        Gtk.Window.__init__(
+            self,
+            title="Firmar PDF"
+        )
+
+        self.set_default_size(1000, 750)
+
+        self.pdf_path = pdf_path
+
+        self.reader = PdfReader(pdf_path)
+
+        self.page_number = 0
+        self.num_pages = len(self.reader.pages)
+
+        # ----------------------------------------------------
+        # Todas las firmas
+        #
+        # Cada elemento contiene:
+        #
+        # image
+        # image_path
+        # x
+        # y
+        # width
+        # height
+        #
+        # Las coordenadas son las de la vista previa.
+        # ----------------------------------------------------
+
+        self.signatures = []
+
+        # Firma actualmente seleccionada
+        self.selected_signature = None
+
+        # Imagen de la página
+        self.preview_pixbuf = None
+
+        self.preview_width = 1
+        self.preview_height = 1
+
+        # Drag
+        self.dragging = False
+        self.drag_offset_x = 0
+        self.drag_offset_y = 0
+
+        # ----------------------------------------------------
+        # Layout principal
+        # ----------------------------------------------------
+
+        main_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=8
+        )
+
+        main_box.set_border_width(10)
+
+        self.add(main_box)
+
+        # ----------------------------------------------------
+        # PDF
+        # ----------------------------------------------------
+
+        pdf_label = Gtk.Label(
+            label=f"PDF: {pdf_path}"
+        )
+
+        pdf_label.set_xalign(0)
+
+        main_box.pack_start(
+            pdf_label,
+            False,
+            False,
+            0
+        )
+
+        # ----------------------------------------------------
+        # Firma
+        # ----------------------------------------------------
+
+        signature_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6
+        )
+
+        signature_label = Gtk.Label(
+            label="Firma:"
+        )
+
+        signature_box.pack_start(
+            signature_label,
+            False,
+            False,
+            0
+        )
+
+        self.signature_entry = Gtk.Entry()
+
+        self.signature_entry.set_hexpand(True)
+
+        signature_box.pack_start(
+            self.signature_entry,
+            True,
+            True,
+            0
+        )
+
+        # ----------------------------------------------------
+        # Elegir otra firma
+        # ----------------------------------------------------
+
+        button_signature = Gtk.Button(
+            label="Elegir..."
+        )
+
+        button_signature.connect(
+            "clicked",
+            self.choose_signature
+        )
+
+        signature_box.pack_start(
+            button_signature,
+            False,
+            False,
+            0
+        )
+
+        # ----------------------------------------------------
+        # Firma predeterminada
+        # ----------------------------------------------------
+
+        button_default_signature = Gtk.Button(
+            label="Firma predeterminada"
+        )
+
+        button_default_signature.connect(
+            "clicked",
+            self.choose_default_signature
+        )
+
+        signature_box.pack_start(
+            button_default_signature,
+            False,
+            False,
+            0
+        )
+
+        main_box.pack_start(
+            signature_box,
+            False,
+            False,
+            0
+        )
+
+        # ----------------------------------------------------
+        # Página
+        # ----------------------------------------------------
+
+        page_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6
+        )
+
+        page_label = Gtk.Label(
+            label="Página:"
+        )
+
+        page_box.pack_start(
+            page_label,
+            False,
+            False,
+            0
+        )
+
+        self.button_previous = Gtk.Button(
+            label="<"
+        )
+
+        self.button_previous.connect(
+            "clicked",
+            self.previous_page
+        )
+
+        page_box.pack_start(
+            self.button_previous,
+            False,
+            False,
+            0
+        )
+
+        self.page_label = Gtk.Label()
+
+        page_box.pack_start(
+            self.page_label,
+            False,
+            False,
+            10
+        )
+
+        self.button_next = Gtk.Button(
+            label=">"
+        )
+
+        self.button_next.connect(
+            "clicked",
+            self.next_page
+        )
+
+        page_box.pack_start(
+            self.button_next,
+            False,
+            False,
+            0
+        )
+
+        main_box.pack_start(
+            page_box,
+            False,
+            False,
+            0
+        )
+
+        # ----------------------------------------------------
+        # Tamaño
+        # ----------------------------------------------------
+
+        size_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6
+        )
+
+        size_label = Gtk.Label(
+            label="Tamaño:"
+        )
+
+        size_box.pack_start(
+            size_label,
+            False,
+            False,
+            0
+        )
+
+        self.size_scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL,
+            50,
+            500,
+            10
+        )
+
+        self.size_scale.set_value(180)
+
+        self.size_scale.set_hexpand(True)
+
+        self.size_scale.connect(
+            "value-changed",
+            self.signature_size_changed
+        )
+
+        size_box.pack_start(
+            self.size_scale,
+            True,
+            True,
+            0
+        )
+
+        self.size_value_label = Gtk.Label(
+            label="180"
+        )
+
+        size_box.pack_start(
+            self.size_value_label,
+            False,
+            False,
+            0
+        )
+
+        main_box.pack_start(
+            size_box,
+            False,
+            False,
+            0
+        )
+
+        # ----------------------------------------------------
+        # Botones para firmas
+        # ----------------------------------------------------
+
+        signatures_button_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6
+        )
+
+        button_add_signature = Gtk.Button(
+            label="+ Agregar firma"
+        )
+
+        button_add_signature.connect(
+            "clicked",
+            self.add_signature
+        )
+
+        signatures_button_box.pack_start(
+            button_add_signature,
+            False,
+            False,
+            0
+        )
+
+        button_delete_signature = Gtk.Button(
+            label="Eliminar firma"
+        )
+
+        button_delete_signature.connect(
+            "clicked",
+            self.delete_signature
+        )
+
+        signatures_button_box.pack_start(
+            button_delete_signature,
+            False,
+            False,
+            0
+        )
+
+        self.signatures_label = Gtk.Label()
+
+        self.signatures_label.set_xalign(0)
+
+        signatures_button_box.pack_start(
+            self.signatures_label,
+            False,
+            False,
+            15
+        )
+
+        main_box.pack_start(
+            signatures_button_box,
+            False,
+            False,
+            0
+        )
+
+        # ----------------------------------------------------
+        # Vista previa
+        # ----------------------------------------------------
+
+        self.drawing_area = Gtk.DrawingArea()
+
+        self.drawing_area.set_hexpand(True)
+        self.drawing_area.set_vexpand(True)
+
+        self.drawing_area.set_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.BUTTON_RELEASE_MASK
+            | Gdk.EventMask.POINTER_MOTION_MASK
+        )
+
+        self.drawing_area.connect(
+            "draw",
+            self.on_draw
+        )
+
+        self.drawing_area.connect(
+            "button-press-event",
+            self.on_button_press
+        )
+
+        self.drawing_area.connect(
+            "button-release-event",
+            self.on_button_release
+        )
+
+        self.drawing_area.connect(
+            "motion-notify-event",
+            self.on_motion
+        )
+
+        main_box.pack_start(
+            self.drawing_area,
+            True,
+            True,
+            0
+        )
+
+        # ----------------------------------------------------
+        # Salida
+        # ----------------------------------------------------
+
+        output_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6
+        )
+
+        output_label = Gtk.Label(
+            label="Guardar como:"
+        )
+
+        output_box.pack_start(
+            output_label,
+            False,
+            False,
+            0
+        )
+
+        base, ext = os.path.splitext(pdf_path)
+
+        self.output_entry = Gtk.Entry()
+
+        self.output_entry.set_text(
+            base + "_firmado.pdf"
+        )
+
+        self.output_entry.set_hexpand(True)
+
+        output_box.pack_start(
+            self.output_entry,
+            True,
+            True,
+            0
+        )
+
+        main_box.pack_start(
+            output_box,
+            False,
+            False,
+            0
+        )
+
+        # ----------------------------------------------------
+        # Botones finales
+        # ----------------------------------------------------
+
+        button_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6
+        )
+
+        button_cancel = Gtk.Button(
+            label="Cancelar"
+        )
+
+        button_cancel.connect(
+            "clicked",
+            self.on_cancel
+        )
+
+        button_box.pack_end(
+            button_cancel,
+            False,
+            False,
+            0
+        )
+
+        button_sign = Gtk.Button(
+            label="Firmar PDF"
+        )
+
+        button_sign.connect(
+            "clicked",
+            self.sign_pdf
+        )
+
+        button_box.pack_end(
+            button_sign,
+            False,
+            False,
+            0
+        )
+
+        main_box.pack_start(
+            button_box,
+            False,
+            False,
+            0
+        )
+
+        # ----------------------------------------------------
+        # Cargar firma predeterminada si existe
+        # ----------------------------------------------------
+
+        if os.path.exists(DEFAULT_SIGNATURE):
+
+            self.signature_entry.set_text(
+                DEFAULT_SIGNATURE
+            )
+
+        # ----------------------------------------------------
+        # Cargar página
+        # ----------------------------------------------------
+
+        self.load_page()
+
+        self.connect(
+            "destroy",
+            Gtk.main_quit
+        )
+
+
+    # ========================================================
+    # Mensajes
+    # ========================================================
+
+    def show_error(self, message):
+
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text=message
+        )
+
+        dialog.run()
+        dialog.destroy()
+
+
+    def show_info(self, message):
+
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK,
+            text=message
+        )
+
+        dialog.run()
+        dialog.destroy()
+
+
+    # ========================================================
+    # Elegir firma
+    # ========================================================
+
+    def choose_signature(self, widget):
+
+        dialog = Gtk.FileChooserDialog(
+            title="Elegir firma",
+            parent=self,
+            action=Gtk.FileChooserAction.OPEN
+        )
+
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OPEN,
+            Gtk.ResponseType.OK
+        )
+
+        image_filter = Gtk.FileFilter()
+
+        image_filter.set_name(
+            "Imágenes"
+        )
+
+        image_filter.add_mime_type(
+            "image/png"
+        )
+
+        image_filter.add_mime_type(
+            "image/jpeg"
+        )
+
+        image_filter.add_mime_type(
+            "image/jpg"
+        )
+
+        dialog.add_filter(
+            image_filter
+        )
+
+        response = dialog.run()
+
+        if response == Gtk.ResponseType.OK:
+
+            filename = dialog.get_filename()
+
+            self.signature_entry.set_text(
+                filename
+            )
+
+        dialog.destroy()
+
+
+    # ========================================================
+    # Firma predeterminada
+    # ========================================================
+
+    def choose_default_signature(self, widget):
+
+        if os.path.exists(DEFAULT_SIGNATURE):
+
+            self.signature_entry.set_text(
+                DEFAULT_SIGNATURE
+            )
+
+            return
+
+        dialog = Gtk.FileChooserDialog(
+            title="Elegir firma predeterminada",
+            parent=self,
+            action=Gtk.FileChooserAction.OPEN
+        )
+
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OPEN,
+            Gtk.ResponseType.OK
+        )
+
+        image_filter = Gtk.FileFilter()
+
+        image_filter.set_name(
+            "Imágenes"
+        )
+
+        image_filter.add_mime_type(
+            "image/png"
+        )
+
+        image_filter.add_mime_type(
+            "image/jpeg"
+        )
+
+        dialog.add_filter(
+            image_filter
+        )
+
+        response = dialog.run()
+
+        if response == Gtk.ResponseType.OK:
+
+            selected = dialog.get_filename()
+
+            try:
+
+                os.makedirs(
+                    os.path.dirname(DEFAULT_SIGNATURE),
+                    exist_ok=True
+                )
+
+                shutil.copy2(
+                    selected,
+                    DEFAULT_SIGNATURE
+                )
+
+                self.signature_entry.set_text(
+                    DEFAULT_SIGNATURE
+                )
+
+            except Exception as e:
+
+                self.show_error(
+                    f"No se pudo guardar la firma predeterminada:\n{e}"
+                )
+
+        dialog.destroy()
+
+
+    # ========================================================
+    # Cargar página
+    # ========================================================
+
+    def load_page(self):
+
+        try:
+
+            temp_png = os.path.join(
+                tempfile.gettempdir(),
+                "nemo_pdf_tools_preview.png"
+            )
+
+            load_pdf_page(
+                self.pdf_path,
+                self.page_number + 1,
+                temp_png
+            )
+
+            self.preview_pixbuf = GdkPixbuf.Pixbuf.new_from_file(
+                temp_png
+            )
+
+            self.preview_width = self.preview_pixbuf.get_width()
+            self.preview_height = self.preview_pixbuf.get_height()
+
+            self.page_label.set_text(
+                f"{self.page_number + 1} / {self.num_pages}"
+            )
+
+            self.button_previous.set_sensitive(
+                self.page_number > 0
+            )
+
+            self.button_next.set_sensitive(
+                self.page_number < self.num_pages - 1
+            )
+
+            self.update_signatures_label()
+
+            self.drawing_area.queue_draw()
+
+        except Exception as e:
+
+            self.show_error(
+                f"No se pudo cargar la página:\n{e}"
+            )
+
+
+    # ========================================================
+    # Página anterior
+    # ========================================================
+
+    def previous_page(self, widget):
+
+        if self.page_number > 0:
+
+            self.page_number -= 1
+
+            self.selected_signature = None
+
+            self.load_page()
+
+
+    # ========================================================
+    # Página siguiente
+    # ========================================================
+
+    def next_page(self, widget):
+
+        if self.page_number < self.num_pages - 1:
+
+            self.page_number += 1
+
+            self.selected_signature = None
+
+            self.load_page()
+
+
+    # ========================================================
+    # Agregar firma
+    # ========================================================
+
+    def add_signature(self, widget):
+
+        signature_path = self.signature_entry.get_text().strip()
+
+        if not signature_path:
+
+            self.show_error(
+                "Primero elegí una imagen de firma."
+            )
+
+            return
+
+        if not os.path.exists(signature_path):
+
+            self.show_error(
+                "La imagen de firma no existe."
+            )
+
+            return
+
+        try:
+
+            image = Image.open(
+                signature_path
+            )
+
+            image.load()
+
+            image_width, image_height = image.size
+
+        except Exception as e:
+
+            self.show_error(
+                f"No se pudo abrir la firma:\n{e}"
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Tamaño inicial
+        # ----------------------------------------------------
+
+        width = float(
+            self.size_scale.get_value()
+        )
+
+        height = (
+            width
+            * image_height
+            / image_width
+        )
+
+        # ----------------------------------------------------
+        # Posición inicial:
+        # centrada
+        # ----------------------------------------------------
+
+        x = (
+            self.preview_width - width
+        ) / 2
+
+        y = (
+            self.preview_height - height
+        ) / 2
+
+        signature = {
+            "image": image,
+            "image_path": signature_path,
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+        }
+
+        self.signatures.append(
+            {
+                "page": self.page_number,
+                "signature": signature,
+            }
+        )
+
+        self.selected_signature = signature
+
+        self.update_signatures_label()
+
+        self.drawing_area.queue_draw()
+
+
+    # ========================================================
+    # Eliminar firma seleccionada
+    # ========================================================
+
+    def delete_signature(self, widget):
+
+        if self.selected_signature is None:
+
+            return
+
+        for item in self.signatures:
+
+            if (
+                item["page"] == self.page_number
+                and item["signature"]
+                is self.selected_signature
+            ):
+
+                self.signatures.remove(item)
+
+                break
+
+        self.selected_signature = None
+
+        self.update_signatures_label()
+
+        self.drawing_area.queue_draw()
+
+
+    # ========================================================
+    # Actualizar texto de firmas
+    # ========================================================
+
+    def update_signatures_label(self):
+
+        count = sum(
+            1
+            for item in self.signatures
+            if item["page"] == self.page_number
+        )
+
+        self.signatures_label.set_text(
+            f"Firmas en esta página: {count}"
+        )
+
+
+    # ========================================================
+    # Cambiar tamaño
+    # ========================================================
+
+    def signature_size_changed(self, widget):
+
+        value = self.size_scale.get_value()
+
+        self.size_value_label.set_text(
+            str(int(value))
+        )
+
+        if self.selected_signature is None:
+
+            return
+
+        signature = self.selected_signature
+
+        old_width = signature["width"]
+        old_height = signature["height"]
+
+        if old_width <= 0:
+
+            return
+
+        ratio = old_height / old_width
+
+        new_width = value
+        new_height = new_width * ratio
+
+        # Mantener centro
+        center_x = (
+            signature["x"]
+            + old_width / 2
+        )
+
+        center_y = (
+            signature["y"]
+            + old_height / 2
+        )
+
+        signature["width"] = new_width
+        signature["height"] = new_height
+
+        signature["x"] = (
+            center_x - new_width / 2
+        )
+
+        signature["y"] = (
+            center_y - new_height / 2
+        )
+
+        self.keep_signature_inside_page(
+            signature
+        )
+
+        self.drawing_area.queue_draw()
+
+
+    # ========================================================
+    # Mantener firma dentro de la página
+    # ========================================================
+
+    def keep_signature_inside_page(self, signature):
+
+        if signature["width"] > self.preview_width:
+
+            signature["width"] = self.preview_width
+
+        if signature["height"] > self.preview_height:
+
+            signature["height"] = self.preview_height
+
+        signature["x"] = max(
+            0,
+            min(
+                signature["x"],
+                self.preview_width
+                - signature["width"]
+            )
+        )
+
+        signature["y"] = max(
+            0,
+            min(
+                signature["y"],
+                self.preview_height
+                - signature["height"]
+            )
+        )
+
+
+    # ========================================================
+    # Dibujar
+    # ========================================================
+
+    def on_draw(self, widget, cr):
+
+        if self.preview_pixbuf is None:
+
+            return
+
+        allocation = widget.get_allocation()
+
+        area_width = allocation.width
+        area_height = allocation.height
+
+        scale = min(
+            area_width / self.preview_width,
+            area_height / self.preview_height
+        )
+
+        draw_width = (
+            self.preview_width * scale
+        )
+
+        draw_height = (
+            self.preview_height * scale
+        )
+
+        offset_x = (
+            area_width - draw_width
+        ) / 2
+
+        offset_y = (
+            area_height - draw_height
+        ) / 2
+
+        # ----------------------------------------------------
+        # Página
+        # ----------------------------------------------------
+
+        cr.save()
+
+        cr.translate(
+            offset_x,
+            offset_y
+        )
+
+        cr.scale(
+            scale,
+            scale
+        )
+
+        Gdk.cairo_set_source_pixbuf(
+            cr,
+            self.preview_pixbuf,
+            0,
+            0
+        )
+
+        cr.paint()
+
+        cr.restore()
+
+        # ----------------------------------------------------
+        # Firmas
+        # ----------------------------------------------------
+
+        for item in self.signatures:
+
+            if item["page"] != self.page_number:
+
+                continue
+
+            signature = item["signature"]
+
+            image = signature["image"]
+
+            # Convertir PIL → RGBA
+            rgba = image.convert("RGBA")
+
+            data = rgba.tobytes(
+                "raw",
+                "BGRA"
+            )
+
+            surface = cairo.ImageSurface.create_for_data(
+                bytearray(data),
+                cairo.FORMAT_ARGB32,
+                rgba.width,
+                rgba.height,
+                rgba.width * 4
+            )
+
+            cr.save()
+
+            cr.translate(
+                offset_x
+                + signature["x"] * scale,
+                offset_y
+                + signature["y"] * scale
+            )
+
+            cr.scale(
+                signature["width"] * scale / rgba.width,
+                signature["height"] * scale / rgba.height
+            )
+
+            cr.set_source_surface(
+                surface,
+                0,
+                0
+            )
+
+            cr.paint()
+
+            cr.restore()
+
+            # ------------------------------------------------
+            # Marco de selección
+            # ------------------------------------------------
+
+            if (
+                signature
+                is self.selected_signature
+            ):
+
+                cr.save()
+
+                cr.rectangle(
+                    offset_x
+                    + signature["x"] * scale,
+                    offset_y
+                    + signature["y"] * scale,
+                    signature["width"] * scale,
+                    signature["height"] * scale
+                )
+
+                cr.set_source_rgb(
+                    0.2,
+                    0.5,
+                    1.0
+                )
+
+                cr.set_line_width(
+                    2
+                )
+
+                cr.stroke()
+
+                cr.restore()
+
+
+    # ========================================================
+    # Obtener coordenadas de la vista previa
+    # ========================================================
+
+    def get_preview_coordinates(self, event):
+
+        allocation = self.drawing_area.get_allocation()
+
+        area_width = allocation.width
+        area_height = allocation.height
+
+        scale = min(
+            area_width / self.preview_width,
+            area_height / self.preview_height
+        )
+
+        draw_width = (
+            self.preview_width * scale
+        )
+
+        draw_height = (
+            self.preview_height * scale
+        )
+
+        offset_x = (
+            area_width - draw_width
+        ) / 2
+
+        offset_y = (
+            area_height - draw_height
+        ) / 2
+
+        x = (
+            event.x - offset_x
+        ) / scale
+
+        y = (
+            event.y - offset_y
+        ) / scale
+
+        return x, y
+
+
+    # ========================================================
+    # Seleccionar / comenzar arrastre
+    # ========================================================
+
+    def on_button_press(self, widget, event):
+
+        if event.button != 1:
+
+            return False
+
+        x, y = self.get_preview_coordinates(
+            event
+        )
+
+        # Buscar desde la última firma hacia atrás.
+        # Así, si se superponen, se selecciona la de arriba.
+
+        for item in reversed(self.signatures):
+
+            if item["page"] != self.page_number:
+
+                continue
+
+            signature = item["signature"]
+
+            if (
+                signature["x"]
+                <= x
+                <= signature["x"] + signature["width"]
+                and
+                signature["y"]
+                <= y
+                <= signature["y"] + signature["height"]
+            ):
+
+                self.selected_signature = signature
+
+                self.dragging = True
+
+                self.drag_offset_x = (
+                    x - signature["x"]
+                )
+
+                self.drag_offset_y = (
+                    y - signature["y"]
+                )
+
+                # Poner el slider en el tamaño de esta firma
+
+                self.size_scale.set_value(
+                    signature["width"]
+                )
+
+                self.drawing_area.queue_draw()
+
+                return True
+
+        # Click fuera de cualquier firma
+        self.selected_signature = None
+
+        self.drawing_area.queue_draw()
+
+        return True
+
+
+    # ========================================================
+    # Arrastrar firma
+    # ========================================================
+
+    def on_motion(self, widget, event):
+
+        if not self.dragging:
+
+            return False
+
+        if self.selected_signature is None:
+
+            return False
+
+        x, y = self.get_preview_coordinates(
+            event
+        )
+
+        signature = self.selected_signature
+
+        signature["x"] = (
+            x - self.drag_offset_x
+        )
+
+        signature["y"] = (
+            y - self.drag_offset_y
+        )
+
+        self.keep_signature_inside_page(
+            signature
+        )
+
+        self.drawing_area.queue_draw()
+
+        return True
+
+
+    # ========================================================
+    # Terminar arrastre
+    # ========================================================
+
+    def on_button_release(self, widget, event):
+
+        if event.button == 1:
+
+            self.dragging = False
+
+        return True
+
+
+    # ========================================================
+    # Crear PDF firmado
+    # ========================================================
+
+    def sign_pdf(self, widget):
+
+        if not self.signatures:
+
+            self.show_error(
+                "No hay ninguna firma agregada."
+            )
+
+            return
+
+        output_path = (
+            self.output_entry
+            .get_text()
+            .strip()
+        )
+
+        if not output_path:
+
+            self.show_error(
+                "Indicá el nombre del archivo de salida."
+            )
+
+            return
+
+        try:
+
+            writer = PdfWriter()
+
+            # ------------------------------------------------
+            # Agrupar firmas por página
+            # ------------------------------------------------
+
+            signatures_by_page = {}
+
+            for item in self.signatures:
+
+                page = item["page"]
+
+                if page not in signatures_by_page:
+
+                    signatures_by_page[page] = []
+
+                signatures_by_page[page].append(
+                    item["signature"]
+                )
+
+            # ------------------------------------------------
+            # Procesar todas las páginas
+            # ------------------------------------------------
+
+            for page_number, page in enumerate(
+                self.reader.pages
+            ):
+
+                # Copiar página original
+                new_page = page
+
+                page_width = float(
+                    page.mediabox.width
+                )
+
+                page_height = float(
+                    page.mediabox.height
+                )
+
+                page_signatures = (
+                    signatures_by_page.get(
+                        page_number,
+                        []
+                    )
+                )
+
+                # ------------------------------------------------
+                # Agregar cada firma
+                # ------------------------------------------------
+
+                for signature in page_signatures:
+
+                    # Coordenadas de preview → PDF
+                    scale_x = (
+                        page_width
+                        / self.preview_width
+                    )
+
+                    scale_y = (
+                        page_height
+                        / self.preview_height
+                    )
+
+                    x_pdf = (
+                        signature["x"]
+                        * scale_x
+                    )
+
+                    signature_width_pdf = (
+                        signature["width"]
+                        * scale_x
+                    )
+
+                    signature_height_pdf = (
+                        signature["height"]
+                        * scale_y
+                    )
+
+                    y_pdf = (
+                        page_height
+                        -
+                        (
+                            signature["y"]
+                            + signature["height"]
+                        )
+                        * scale_y
+                    )
+
+                    # ------------------------------------------------
+                    # Crear PDF temporal exactamente del tamaño
+                    # de esta firma
+                    # ------------------------------------------------
+
+                    tmp_pdf = tempfile.NamedTemporaryFile(
+                        suffix=".pdf",
+                        delete=False
+                    )
+
+                    tmp_pdf.close()
+
+                    surface = cairo.PDFSurface(
+                        tmp_pdf.name,
+                        signature_width_pdf,
+                        signature_height_pdf
+                    )
+
+                    cr = cairo.Context(
+                        surface
+                    )
+
+                    image = signature["image"].convert(
+                        "RGBA"
+                    )
+
+                    rgba = image.tobytes(
+                        "raw",
+                        "BGRA"
+                    )
+
+                    image_surface = cairo.ImageSurface.create_for_data(
+                        bytearray(rgba),
+                        cairo.FORMAT_ARGB32,
+                        image.width,
+                        image.height,
+                        image.width * 4
+                    )
+
+                    cr.save()
+
+                    cr.scale(
+                        signature_width_pdf
+                        / image.width,
+
+                        signature_height_pdf
+                        / image.height
+                    )
+
+                    cr.set_source_surface(
+                        image_surface,
+                        0,
+                        0
+                    )
+
+                    cr.paint()
+
+                    cr.restore()
+
+                    surface.finish()
+
+                    # ------------------------------------------------
+                    # Leer firma temporal
+                    # ------------------------------------------------
+
+                    sig_reader = PdfReader(
+                        tmp_pdf.name
+                    )
+
+                    sig_page = sig_reader.pages[0]
+
+                    # ------------------------------------------------
+                    # Incorporar firma
+                    # ------------------------------------------------
+
+                    new_page.merge_translated_page(
+                        sig_page,
+                        x_pdf,
+                        y_pdf,
+                        expand=False
+                    )
+
+                    os.unlink(
+                        tmp_pdf.name
+                    )
+
+                writer.add_page(
+                    new_page
+                )
+
+            # ------------------------------------------------
+            # Guardar
+            # ------------------------------------------------
+
+            with open(
+                output_path,
+                "wb"
+            ) as f:
+
+                writer.write(f)
+
+            self.show_info(
+                f"PDF firmado correctamente:\n\n{output_path}"
+            )
+
+        except Exception as e:
+
+            self.show_error(
+                f"No se pudo firmar el PDF:\n\n{e}"
+            )
+
+
+    # ========================================================
+    # Cancelar
+    # ========================================================
+
+    def on_cancel(self, widget):
+
+        self.destroy()
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def main():
+
+    if len(sys.argv) != 2:
+
+        print(
+            "Uso: firmar-pdf archivo.pdf"
+        )
+
+        sys.exit(1)
+
+    pdf_path = sys.argv[1]
+
+    if not os.path.isfile(pdf_path):
+
+        print(
+            f"No existe el archivo: {pdf_path}"
+        )
+
+        sys.exit(1)
+
+    window = FirmarPDF(
+        pdf_path
+    )
+
+    window.show_all()
+
+    Gtk.main()
+
+
+if __name__ == "__main__":
+
+    main()

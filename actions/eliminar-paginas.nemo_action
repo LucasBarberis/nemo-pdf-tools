@@ -1,0 +1,6 @@
+[Nemo Action]
+Name=Eliminar páginas
+Comment=Elimina páginas seleccionadas de un PDF
+Exec=sh -c '$HOME/.local/share/nemo-pdf-tools/bin/eliminar-paginas "$@"' dummy %F
+Selection=s
+Extensions=pdf;

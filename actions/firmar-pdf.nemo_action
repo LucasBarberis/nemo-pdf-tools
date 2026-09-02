@@ -1,0 +1,6 @@
+[Nemo Action]
+Name=Firmar PDF
+Comment=Agrega una o varias firmas visuales a un PDF
+Exec=sh -c '$HOME/.local/share/nemo-pdf-tools/bin/firmar-pdf "$1"' dummy %F
+Selection=s
+Extensions=pdf;

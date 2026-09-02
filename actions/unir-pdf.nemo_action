@@ -1,0 +1,6 @@
+[Nemo Action]
+Name=Unir PDF
+Comment=Une los archivos PDF seleccionados
+Exec=sh -c '$HOME/.local/share/nemo-pdf-tools/bin/unir-pdf-gui "$@"' dummy %F
+Selection=m
+Extensions=pdf;

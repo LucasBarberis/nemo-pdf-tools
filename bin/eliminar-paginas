@@ -1,0 +1,509 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+
+sys.path.insert(
+    0,
+    os.path.expanduser("~/.local/share/nemo-pdf-tools/lib")
+)
+
+from pdf_tools import parse_pages
+
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, GLib
+
+from pypdf import PdfReader, PdfWriter
+
+
+
+class RemovePDFWindow(Gtk.Window):
+
+    def __init__(self, filename):
+
+        Gtk.Window.__init__(
+            self,
+            title="Eliminar páginas"
+        )
+
+        self.filename = os.path.abspath(filename)
+
+        self.set_border_width(12)
+        self.set_default_size(600, 260)
+        self.set_position(
+            Gtk.WindowPosition.CENTER
+        )
+
+        try:
+            self.reader = PdfReader(self.filename)
+            self.num_pages = len(self.reader.pages)
+
+        except Exception as e:
+
+            self.reader = None
+            self.num_pages = 0
+
+            self.error(
+                "No se pudo abrir el PDF:\n\n" +
+                str(e)
+            )
+
+            return
+
+        # --------------------------------------------------
+        # Layout
+        # --------------------------------------------------
+
+        vbox = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=10
+        )
+
+        self.add(vbox)
+
+        # Archivo
+
+        label = Gtk.Label()
+
+        label.set_markup(
+            "<b>Archivo:</b> " +
+            GLib.markup_escape_text(
+                os.path.basename(self.filename)
+            )
+        )
+
+        label.set_xalign(0)
+
+        vbox.pack_start(
+            label,
+            False,
+            False,
+            0
+        )
+
+        # Información
+
+        info = Gtk.Label(
+            label=(
+                f"El documento tiene "
+                f"{self.num_pages} páginas."
+            )
+        )
+
+        info.set_xalign(0)
+
+        vbox.pack_start(
+            info,
+            False,
+            False,
+            0
+        )
+
+        # --------------------------------------------------
+        # Páginas
+        # --------------------------------------------------
+
+        pages_label = Gtk.Label(
+            label="Páginas a eliminar:"
+        )
+
+        pages_label.set_xalign(0)
+
+        vbox.pack_start(
+            pages_label,
+            False,
+            False,
+            0
+        )
+
+        self.pages_entry = Gtk.Entry()
+
+        self.pages_entry.set_placeholder_text(
+            "Ejemplo: 2-4,8,15-17"
+        )
+
+        vbox.pack_start(
+            self.pages_entry,
+            False,
+            False,
+            0
+        )
+
+        help_label = Gtk.Label(
+            label=(
+                "Indicá páginas individuales o rangos "
+                "separados por comas."
+            )
+        )
+
+        help_label.set_xalign(0)
+
+        vbox.pack_start(
+            help_label,
+            False,
+            False,
+            0
+        )
+
+        # --------------------------------------------------
+        # Salida
+        # --------------------------------------------------
+
+        output_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6
+        )
+
+        output_label = Gtk.Label(
+            label="Archivo de salida:"
+        )
+
+        output_label.set_xalign(0)
+
+        self.output_entry = Gtk.Entry()
+
+        directory = os.path.dirname(
+            self.filename
+        )
+
+        basename = os.path.splitext(
+            os.path.basename(self.filename)
+        )[0]
+
+        default_output = os.path.join(
+            directory,
+            basename + "_sin_paginas.pdf"
+        )
+
+        self.output_entry.set_text(
+            default_output
+        )
+
+        browse = Gtk.Button(
+            label="Elegir..."
+        )
+
+        browse.connect(
+            "clicked",
+            self.choose_output
+        )
+
+        output_box.pack_start(
+            output_label,
+            False,
+            False,
+            0
+        )
+
+        output_box.pack_start(
+            self.output_entry,
+            True,
+            True,
+            0
+        )
+
+        output_box.pack_start(
+            browse,
+            False,
+            False,
+            0
+        )
+
+        vbox.pack_start(
+            output_box,
+            False,
+            False,
+            0
+        )
+
+        # --------------------------------------------------
+        # Botones
+        # --------------------------------------------------
+
+        button_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6
+        )
+
+        cancel = Gtk.Button(
+            label="Cancelar"
+        )
+
+        remove = Gtk.Button(
+            label="Eliminar"
+        )
+
+        cancel.connect(
+            "clicked",
+            self.cancel
+        )
+
+        remove.connect(
+            "clicked",
+            self.remove_pages
+        )
+
+        button_box.pack_end(
+            remove,
+            False,
+            False,
+            0
+        )
+
+        button_box.pack_end(
+            cancel,
+            False,
+            False,
+            0
+        )
+
+        vbox.pack_start(
+            button_box,
+            False,
+            False,
+            0
+        )
+
+        self.connect(
+            "key-press-event",
+            self.key_press
+        )
+
+        self.pages_entry.grab_focus()
+
+    # --------------------------------------------------
+
+    def choose_output(self, button):
+
+        dialog = Gtk.FileChooserDialog(
+            title="Elegir archivo PDF",
+            parent=self,
+            action=Gtk.FileChooserAction.SAVE
+        )
+
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_SAVE,
+            Gtk.ResponseType.ACCEPT
+        )
+
+        dialog.set_do_overwrite_confirmation(
+            True
+        )
+
+        current = self.output_entry.get_text()
+
+        if current:
+
+            directory = os.path.dirname(current)
+            filename = os.path.basename(current)
+
+            if os.path.isdir(directory):
+                dialog.set_current_folder(
+                    directory
+                )
+
+            dialog.set_current_name(
+                filename
+            )
+
+        response = dialog.run()
+
+        if response == Gtk.ResponseType.ACCEPT:
+
+            filename = dialog.get_filename()
+
+            if not filename.lower().endswith(".pdf"):
+                filename += ".pdf"
+
+            self.output_entry.set_text(
+                filename
+            )
+
+        dialog.destroy()
+
+    # --------------------------------------------------
+
+    def remove_pages(self, button):
+
+        page_text = (
+            self.pages_entry
+            .get_text()
+            .strip()
+        )
+
+        if not page_text:
+
+            self.error(
+                "Indicá las páginas que querés eliminar."
+            )
+
+            return
+
+        try:
+
+            pages_to_remove = parse_pages(
+                page_text,
+                self.num_pages
+            )
+
+        except ValueError as e:
+
+            self.error(str(e))
+
+            return
+
+        # No tiene sentido dejar un PDF sin páginas
+
+        if len(pages_to_remove) >= self.num_pages:
+
+            self.error(
+                "No podés eliminar todas las páginas "
+                "del documento."
+            )
+
+            return
+
+        output = (
+            self.output_entry
+            .get_text()
+            .strip()
+        )
+
+        if not output:
+
+            self.error(
+                "Elegí un archivo de salida."
+            )
+
+            return
+
+        output = os.path.abspath(
+            os.path.expanduser(output)
+        )
+
+        if output == self.filename:
+
+            self.error(
+                "El archivo de salida no puede "
+                "ser el archivo original."
+            )
+
+            return
+
+        try:
+
+            writer = PdfWriter()
+
+            for index, page in enumerate(
+                self.reader.pages
+            ):
+
+                if index not in pages_to_remove:
+                    writer.add_page(page)
+
+            with open(output, "wb") as f:
+                writer.write(f)
+
+        except Exception as e:
+
+            self.error(
+                "No se pudo crear el PDF:\n\n" +
+                str(e)
+            )
+
+            return
+
+        remaining = (
+            self.num_pages -
+            len(pages_to_remove)
+        )
+
+        dialog = Gtk.MessageDialog(
+            parent=self,
+            flags=0,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK,
+            text="Páginas eliminadas correctamente"
+        )
+
+        dialog.format_secondary_text(
+            f"Se eliminaron "
+            f"{len(pages_to_remove)} páginas.\n"
+            f"Quedaron {remaining} páginas.\n\n"
+            f"Archivo:\n{output}"
+        )
+
+        dialog.run()
+        dialog.destroy()
+
+        self.destroy()
+        Gtk.main_quit()
+
+    # --------------------------------------------------
+
+    def cancel(self, button):
+
+        self.destroy()
+        Gtk.main_quit()
+
+    # --------------------------------------------------
+
+    def error(self, message):
+
+        dialog = Gtk.MessageDialog(
+            parent=self,
+            flags=0,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text="Error"
+        )
+
+        dialog.format_secondary_text(
+            message
+        )
+
+        dialog.run()
+        dialog.destroy()
+
+    # --------------------------------------------------
+
+    def key_press(self, widget, event):
+
+        if event.keyval == 65307:  # Escape
+            self.cancel(None)
+
+        elif event.keyval == 65293:  # Enter
+            self.remove_pages(None)
+
+
+def main():
+
+    files = [
+        f
+        for f in sys.argv[1:]
+        if os.path.isfile(f)
+        and f.lower().endswith(".pdf")
+    ]
+
+    if len(files) != 1:
+
+        print(
+            "Seleccioná exactamente un archivo PDF."
+        )
+
+        return 1
+
+    win = RemovePDFWindow(files[0])
+
+    win.show_all()
+
+    Gtk.main()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
