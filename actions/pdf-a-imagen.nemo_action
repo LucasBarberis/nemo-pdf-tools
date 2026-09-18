@@ -1,0 +1,6 @@
+[Nemo Action]
+Name=Convertir PDF a imagen
+Comment=Convierte cada página de un PDF en una imagen PNG o JPG
+Exec=sh -c '$HOME/.local/share/nemo-pdf-tools/bin/pdf-a-imagen "$1"' dummy %F
+Selection=s
+Extensions=pdf;

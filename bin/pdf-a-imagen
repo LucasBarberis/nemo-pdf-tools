@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+
+import glob
+import os
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk
+
+
+class PDFToImage(Gtk.Window):
+
+    def __init__(self, pdf_path):
+        super().__init__(title="Convertir PDF a imagen")
+
+        self.set_border_width(15)
+        self.set_default_size(400, 220)
+        self.set_position(Gtk.WindowPosition.CENTER)
+
+        self.pdf_path = pdf_path
+
+        grid = Gtk.Grid()
+        grid.set_row_spacing(12)
+        grid.set_column_spacing(12)
+        self.add(grid)
+
+        label = Gtk.Label()
+        label.set_markup("<b>Convertir PDF a imágenes</b>")
+        label.set_halign(Gtk.Align.START)
+        grid.attach(label, 0, 0, 2, 1)
+
+        label = Gtk.Label(label="Formato:")
+        label.set_halign(Gtk.Align.START)
+        grid.attach(label, 0, 1, 1, 1)
+
+        self.format_combo = Gtk.ComboBoxText()
+        self.format_combo.append("png", "PNG")
+        self.format_combo.append("jpg", "JPG")
+        self.format_combo.set_active_id("png")
+        grid.attach(self.format_combo, 1, 1, 1, 1)
+
+        label = Gtk.Label(label="Resolución:")
+        label.set_halign(Gtk.Align.START)
+        grid.attach(label, 0, 2, 1, 1)
+
+        self.dpi_combo = Gtk.ComboBoxText()
+
+        for dpi in ("150", "200", "300", "600"):
+            self.dpi_combo.append(dpi, f"{dpi} dpi")
+
+        self.dpi_combo.set_active_id("150")
+        grid.attach(self.dpi_combo, 1, 2, 1, 1)
+
+        self.convert_button = Gtk.Button(label="Convertir")
+        self.convert_button.connect("clicked", self.convert)
+        grid.attach(self.convert_button, 0, 3, 2, 1)
+
+        self.connect("destroy", Gtk.main_quit)
+
+    def show_error(self, message):
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=Gtk.DialogFlags.MODAL,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text=message,
+        )
+
+        dialog.run()
+        dialog.destroy()
+
+    def notify(self, message):
+        try:
+            subprocess.Popen(
+                [
+                    "notify-send",
+                    "-t",
+                    "2500",
+                    "Nemo PDF Tools",
+                    message,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            pass
+
+    def convert(self, button):
+        fmt = self.format_combo.get_active_id()
+        dpi = self.dpi_combo.get_active_id()
+
+        directory = os.path.dirname(self.pdf_path)
+        basename = os.path.splitext(
+            os.path.basename(self.pdf_path)
+        )[0]
+
+        extension = "png" if fmt == "png" else "jpg"
+
+        # pdftoppm siempre genera inicialmente:
+        # documento-1.png, documento-2.png, ...
+        prefix = os.path.join(directory, basename)
+
+        command = [
+            "pdftoppm",
+            "-r",
+            dpi,
+        ]
+
+        if fmt == "png":
+            command.append("-png")
+        else:
+            command.append("-jpeg")
+
+        command.extend([
+            self.pdf_path,
+            prefix,
+        ])
+
+        self.convert_button.set_sensitive(False)
+
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode != 0:
+                self.show_error(
+                    "No se pudo convertir el PDF:\n\n"
+                    + result.stderr
+                )
+                return
+
+            # Buscar las imágenes generadas.
+            pattern = os.path.join(
+                directory,
+                f"{basename}-*.{extension}"
+            )
+
+            images = sorted(glob.glob(pattern))
+
+            if not images:
+                self.show_error(
+                    "La conversión terminó, pero no se "
+                    "encontraron las imágenes generadas."
+                )
+                return
+
+            # Para un PDF de una sola página eliminamos
+            # el sufijo "-1".
+            if len(images) == 1:
+                final_name = os.path.join(
+                    directory,
+                    f"{basename}.{extension}"
+                )
+
+                # Si ya existe, reemplazarlo.
+                os.replace(images[0], final_name)
+
+                message = (
+                    f"Conversión completada:\n"
+                    f"{os.path.basename(final_name)}"
+                )
+
+            else:
+                message = (
+                    f"Conversión completada:\n"
+                    f"{len(images)} imágenes generadas."
+                )
+
+            self.notify(message)
+
+            Gtk.main_quit()
+
+        except FileNotFoundError:
+            self.show_error(
+                "No se encontró pdftoppm.\n\n"
+                "Instalá el paquete poppler-utils."
+            )
+
+        finally:
+            self.convert_button.set_sensitive(True)
+
+
+def main():
+    if len(sys.argv) != 2:
+        print(
+            f"Uso: {sys.argv[0]} archivo.pdf",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    pdf_path = os.path.abspath(sys.argv[1])
+
+    if not os.path.isfile(pdf_path):
+        print(
+            f"No existe el archivo: {pdf_path}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not pdf_path.lower().endswith(".pdf"):
+        print(
+            "El archivo seleccionado no es un PDF.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    window = PDFToImage(pdf_path)
+    window.show_all()
+
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

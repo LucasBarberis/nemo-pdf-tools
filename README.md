@@ -48,6 +48,32 @@ Cada firma puede:
 
 La firma es visual: se incorpora como una imagen al documento y no constituye una firma digital criptográfica.
 
+### Convertir PDF a imagen
+
+Convierte las páginas de un PDF en imágenes PNG o JPG.
+
+Permite seleccionar la resolución:
+
+- 150 dpi
+- 200 dpi
+- 300 dpi
+- 600 dpi
+
+Las imágenes se guardan en el mismo directorio que el PDF.
+
+Para un PDF de una sola página:
+
+    documento.pdf -> documento.png
+
+Para un PDF de varias páginas:
+
+    documento.pdf
+    documento-1.png
+    documento-2.png
+    documento-3.png
+
+La conversión no modifica el PDF original.
+
 ## Instalación
 
 Clonar el repositorio:
@@ -70,7 +96,7 @@ El proyecto incluye pypdf, por lo que no es necesario instalarlo mediante pip.
 En Ubuntu 24.04 se necesitan:
 
     sudo apt install nemo python3 python3-gi python3-cairo python3-pil \
-        gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 poppler-utils
+        gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 poppler-utils libnotify-bin
 
 Las herramientas utilizan:
 
@@ -81,6 +107,7 @@ Las herramientas utilizan:
 - Cairo
 - Pillow
 - pdftoppm
+- notify-send
 
 ## Desinstalación
 
